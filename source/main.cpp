@@ -70,6 +70,7 @@ namespace Bluebird
 			enum class Status
 			{
 				Unknown,
+				FileNotFound,
 				ReadyClosed,
 				ReadyOpen,
 				Writing,
@@ -78,6 +79,7 @@ namespace Bluebird
 				Closed,
 				ErrorOpeningStream,
 				ErrorWriting,
+				ErrorSeeking,
 				ErrorReading,
 				PossibleCorruption,
 				UnableToCalculateRecords
@@ -169,10 +171,10 @@ namespace Bluebird
 						m_FileStream = CreateFileA(
 							m_Filename.c_str(),
 							GENERIC_READ | GENERIC_WRITE,
-							0,			// Do not share
+							FILE_SHARE_READ | FILE_SHARE_WRITE,
 							NULL,		// Default security
 							OPEN_ALWAYS,// Open or create
-							FILE_ATTRIBUTE_NORMAL | FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH,
+							FILE_ATTRIBUTE_NORMAL, // | FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH,
 							NULL);
 #else
 						m_FileStream = std::make_shared<std::fstream>(
@@ -199,16 +201,16 @@ namespace Bluebird
 				{
 					try
 					{
-#ifdef _WIN32						
-						if (GetFileSize(m_FileStream, &m_FileSizeDword) != INVALID_FILE_SIZE)
+#ifdef _WIN32
+						LARGE_INTEGER l_FileSize;
+						if (GetFileSizeEx(m_FileStream, &l_FileSize) != 0)
 						{
-							unsigned int l_fpos(m_FileSizeDword);
+							unsigned int l_fpos(static_cast<unsigned int>(l_FileSize.QuadPart));
 #else
 							auto l_Pos(m_FileStream->tellg());
 							std::fpos_t l_fpos(l_Pos);
 #endif
-
-							m_RecordCount = static_cast<unsigned int>(l_fpos) / c_RecordSize;
+							m_RecordCount = l_fpos / c_RecordSize;
 
 							auto l_Remainder(l_fpos % c_RecordSize);
 							if (l_Remainder == 0)
@@ -218,7 +220,6 @@ namespace Bluebird
 							else
 							{
 								std::cout << "There are [" << l_fpos << "bytes] in the file which is [" << m_RecordCount << "] full records and [" << l_Remainder << "bytes] remaining" << std::endl;
-
 								m_LoadState = LoadState::Corrupt;
 							}							
 #ifdef _WIN32
@@ -257,37 +258,49 @@ namespace Bluebird
 							m_Status = Status::Reading;
 
 							l_result = std::shared_ptr<T>(new T());
-
-							std::streampos l_SeekPos(p_RecordOffset * c_RecordSize);
+							
 							try
 							{
-#ifdef _WIN32								
-								SetFilePointer(
+#ifdef _WIN32							
+								LARGE_INTEGER l_NewFilePosition;
+								LARGE_INTEGER l_SeekPos{ p_RecordOffset * c_RecordSize };
+								if (SetFilePointerEx(
 									m_FileStream,
 									l_SeekPos,
-									NULL,
-									FILE_BEGIN);
-								ReadFile(
-									m_FileStream,
-									reinterpret_cast<char*>(l_result.get()),
-									c_RecordSize,
-									&m_FileSizeDword,
-									NULL);
-								if (m_FileSizeDword != c_RecordSize)
+									&l_NewFilePosition,
+									FILE_BEGIN) != 0)
 								{
-									m_Status = Status::ErrorReading;
-									throw std::exception("Read Error");
+									OVERLAPPED l_Overlapped{ 0 };
+									if (ReadFileEx(
+										m_FileStream,
+										l_result.get(),
+										c_RecordSize,
+										&l_Overlapped,
+										CompletionRoutine) != 0)
+									{										
+										m_Status = m_PrevStatus;
+										l_resultCode = RecordReadStatus::Okay;
+									}
+									else
+									{
+										m_Status = Status::ErrorReading;
+										throw std::exception("Read Error");
+									}
+								}
+								else
+								{
+									m_Status = Status::ErrorSeeking;
+									throw std::exception("Seeking Error");
 								}
 #else
+								std::streampos l_SeekPos(p_RecordOffset * c_RecordSize);
 								m_FileStream->seekg(l_SeekPos);
 								m_FileStream->read(
 									reinterpret_cast<char*>(l_result.get()),
 									c_RecordSize);
-#endif
-
 								m_Status = m_PrevStatus;
-
 								l_resultCode = RecordReadStatus::Okay;
+#endif
 							}
 							catch (const std::exception&)
 							{
@@ -372,6 +385,11 @@ namespace Bluebird
 				m_Status = Status::Closed;
 			}
 
+			static void WINAPI CompletionRoutine(DWORD u32_ErrorCode, DWORD u32_BytesTransfered, OVERLAPPED* pk_Overlapped)
+			{
+				int gothere = 1;
+			}
+
 			const bool Write(const T* p_Record) noexcept
 			{
 				bool l_result(false);
@@ -387,21 +405,37 @@ namespace Bluebird
 						try
 						{
 #ifdef _WIN32
-							SetFilePointer(
+							LARGE_INTEGER l_NewFilePointer;
+							if (SetFilePointerEx(
 								m_FileStream,
-								0,
-								NULL,
-								FILE_END);
-							if (WriteFile(
-								m_FileStream,
-								p_Record,
-								c_RecordSize,
-								&m_FileSizeDword,
-								NULL))
+								{ 0 },
+								&l_NewFilePointer,
+								FILE_END) != 0)
 							{
-								if (m_FileSizeDword != c_RecordSize)
+								OVERLAPPED l_Overlapped{ 0 };
+								if (WriteFileEx(
+									m_FileStream,
+									p_Record,
+									c_RecordSize,
+									&l_Overlapped,
+									CompletionRoutine) != 0)
 								{
-									throw std::exception("Error Writing");
+									if (FlushFileBuffers(m_FileStream) != 0)
+									{
+										int gothere = 1;
+									}
+									++m_RecordCount;
+									m_Status = m_PrevStatus;
+									l_result = true;
+								}
+								else
+								{
+									auto l_GLE(GetLastError());
+									if (l_GLE != ERROR_IO_PENDING)
+									{
+										std::cout << GetLastErrorAsString(l_GLE).c_str() << std::endl;
+										throw std::exception("Unable to Write");
+									}
 								}
 							}
 							else
@@ -410,7 +444,7 @@ namespace Bluebird
 								if (l_GLE != ERROR_IO_PENDING)
 								{
 									std::cout << GetLastErrorAsString(l_GLE).c_str() << std::endl;
-									throw std::exception("Unable to Write");
+									throw std::exception("Unable to Seek");
 								}
 							}
 #else
@@ -419,16 +453,24 @@ namespace Bluebird
 							m_FileStream->write(reinterpret_cast<const char*>(p_Record), c_RecordSize);
 							m_FileStream->sync();
 							sync();
-#endif							
 							++m_RecordCount;
 							m_Status = m_PrevStatus;
 							l_result = true;
+#endif														
 						}
 						catch (const std::exception&)
 						{
 							m_Status = Status::ErrorWriting;
 						}
 					}
+					else
+					{
+						// TODO - Unable to write
+					}
+				}
+				else
+				{
+					// TODO - Already closing
 				}
 
 				return l_result;
@@ -446,11 +488,11 @@ int main()
 	unsigned int l_R1, l_R2, l_R3;
 
 	unsigned int l_TotalTestCount(0);
-	while (l_TotalTestCount < 100)
+	while (l_TotalTestCount < 100000)
 	{
 		std::cout << "\rLoad Test: " << ++l_TotalTestCount;
 
-		CumulativeWriter<Something> l_File("d:\\test.txt");
+		CumulativeWriter<Something> l_File("e:\\test.txt");
 		if (l_File.RecordCount() > 0)
 		{
 			if (l_File.WasCorruptAtLoad())
@@ -509,9 +551,9 @@ int main()
 
 	unsigned int l_WPS(0);
 	l_TotalTestCount = 0;
-	CumulativeWriter<Something> l_WriteFile("d:\\test2.txt");
+	CumulativeWriter<Something> l_WriteFile("e:\\test2.txt");
 	auto l_Time(std::chrono::steady_clock::now());
-	while (l_TotalTestCount < 100)
+	while (l_TotalTestCount < 10000)
 	{
 		auto l_Duration(std::chrono::steady_clock::now() - l_Time);
 		auto l_Cast(std::chrono::duration_cast<std::chrono::milliseconds>(l_Duration));
@@ -535,19 +577,32 @@ int main()
 	l_WriteFile.Close();
 
 	Something l_Expected{ l_R1, l_R2, l_R3 };
-	std::cout << "Expected: ";
-	PrintSomething(l_Expected);
+	//std::cout << "Expected: ";
+	//PrintSomething(l_Expected);
 
 	CumulativeWriter<Something> l_ReadBack("d:\\test2.txt");
 	if (l_ReadBack.WasOkayAtLoad())
 	{
-		std::cout << "Loaded:   ";
+		//std::cout << "Loaded:   ";
 
 		auto l_Loaded(l_ReadBack.LoadLastRecord());
 		if (l_Loaded.first == Bluebird::CumulativeWriter<Something>::RecordReadStatus::Okay &&
 			l_Loaded.second != nullptr)
 		{
-			PrintSomething(*l_Loaded.second);
+			if (l_Expected.X != l_Loaded.second->X)
+			{
+				std::cout << "X Failed..." << std::endl;
+			}
+			if (l_Expected.Y != l_Loaded.second->Y)
+			{
+				std::cout << "Y Failed..." << std::endl;
+			}
+			if (l_Expected.Z != l_Loaded.second->Z)
+			{
+				std::cout << "Z Failed..." << std::endl;
+			}
+
+			//PrintSomething(*l_Loaded.second);
 		}
 		else
 		{
