@@ -1,4 +1,5 @@
 #include <ios>
+#include <cstdio>
 #include <iostream>
 #include <fstream>
 #include <chrono>
@@ -141,7 +142,7 @@ namespace Bluebird
 						auto l_Pos(m_FileStream->tellg());
 						std::fpos_t l_fpos(l_Pos);
 
-						m_RecordCount = l_fpos / c_RecordSize;
+						m_RecordCount = static_cast<unsigned int>(l_fpos) / c_RecordSize;
 
 						auto l_Remainder(l_fpos % c_RecordSize);
 						if ( l_Remainder == 0 )
@@ -320,7 +321,7 @@ int main()
 {
 	using namespace Bluebird;
 
-	std::srand(std::chrono::high_resolution_clock::now().time_since_epoch().count());
+	std::srand(static_cast<unsigned int>(std::chrono::high_resolution_clock::now().time_since_epoch().count()));
 	unsigned int l_R1, l_R2, l_R3;
 
 	unsigned int l_TotalTestCount(0);
