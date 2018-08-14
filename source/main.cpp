@@ -19,6 +19,35 @@
 
 namespace Bluebird
 {
+#ifdef _WIN32
+	//Returns the last Win32 error, in string format. Returns an empty string if there is no error.
+	const std::string GetLastErrorAsString(const DWORD& p_Error)
+	{
+		std::string l_result("No Error");
+		
+		if (p_Error != 0)
+		{
+			LPSTR messageBuffer(nullptr);
+			size_t size(
+				FormatMessageA(
+					FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+					NULL,
+					p_Error,
+					MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+					(LPSTR)&messageBuffer,
+					0,
+					NULL));
+
+			l_result = std::string(messageBuffer, size);
+
+			//Free the buffer.
+			LocalFree(messageBuffer);
+		}
+
+		return l_result;
+	}
+#endif
+
 	struct Something
 	{
 		unsigned int X, Y, Z;
@@ -49,6 +78,7 @@ namespace Bluebird
 				Closed,
 				ErrorOpeningStream,
 				ErrorWriting,
+				ErrorReading,
 				PossibleCorruption,
 				UnableToCalculateRecords
 			};
@@ -75,6 +105,7 @@ namespace Bluebird
 			std::string		m_Filename;
 #ifdef _WIN32
 			HANDLE			m_FileStream;
+			DWORD			m_FileSizeDword;
 #else
 			FileStreamPtr		m_FileStream;
 #endif
@@ -96,6 +127,7 @@ namespace Bluebird
 				m_Filename(p_Filename),
 #ifdef _WIN32
 				m_FileStream(INVALID_HANDLE_VALUE),
+				m_FileSizeDword(0),
 #else
 				m_FileStream(nullptr),
 #endif
@@ -137,9 +169,9 @@ namespace Bluebird
 						m_FileStream = CreateFileA(
 							m_Filename.c_str(),
 							GENERIC_READ | GENERIC_WRITE,
-							FILE_SHARE_READ | FILE_SHARE_WRITE,
-							NULL,
-							OPEN_ALWAYS,
+							0,			// Do not share
+							NULL,		// Default security
+							OPEN_ALWAYS,// Open or create
 							FILE_ATTRIBUTE_NORMAL | FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH,
 							NULL);
 #else
@@ -167,10 +199,10 @@ namespace Bluebird
 				{
 					try
 					{
-#ifdef _WIN32
-						DWORD l_fpos(0);
-						if (GetFileSize(m_FileStream, &l_fpos) != INVALID_FILE_SIZE)
+#ifdef _WIN32						
+						if (GetFileSize(m_FileStream, &m_FileSizeDword) != INVALID_FILE_SIZE)
 						{
+							unsigned int l_fpos(m_FileSizeDword);
 #else
 							auto l_Pos(m_FileStream->tellg());
 							std::fpos_t l_fpos(l_Pos);
@@ -188,9 +220,7 @@ namespace Bluebird
 								std::cout << "There are [" << l_fpos << "bytes] in the file which is [" << m_RecordCount << "] full records and [" << l_Remainder << "bytes] remaining" << std::endl;
 
 								m_LoadState = LoadState::Corrupt;
-							}
-
-							//m_FileStream->seekg(0, std::ios_base::beg);
+							}							
 #ifdef _WIN32
 						}					
 						else
@@ -231,18 +261,23 @@ namespace Bluebird
 							std::streampos l_SeekPos(p_RecordOffset * c_RecordSize);
 							try
 							{
-#ifdef _WIN32
+#ifdef _WIN32								
 								SetFilePointer(
 									m_FileStream,
 									l_SeekPos,
 									NULL,
 									FILE_BEGIN);
-								WriteFile(
+								ReadFile(
 									m_FileStream,
 									reinterpret_cast<char*>(l_result.get()),
 									c_RecordSize,
-									NULL,
+									&m_FileSizeDword,
 									NULL);
+								if (m_FileSizeDword != c_RecordSize)
+								{
+									m_Status = Status::ErrorReading;
+									throw std::exception("Read Error");
+								}
 #else
 								m_FileStream->seekg(l_SeekPos);
 								m_FileStream->read(
@@ -357,19 +392,34 @@ namespace Bluebird
 								0,
 								NULL,
 								FILE_END);
-							WriteFile(
+							if (WriteFile(
 								m_FileStream,
-								reinterpret_cast<const char*>(p_Record),
+								p_Record,
 								c_RecordSize,
-								NULL,
-								NULL);
+								&m_FileSizeDword,
+								NULL))
+							{
+								if (m_FileSizeDword != c_RecordSize)
+								{
+									throw std::exception("Error Writing");
+								}
+							}
+							else
+							{
+								auto l_GLE(GetLastError());
+								if (l_GLE != ERROR_IO_PENDING)
+								{
+									std::cout << GetLastErrorAsString(l_GLE).c_str() << std::endl;
+									throw std::exception("Unable to Write");
+								}
+							}
 #else
+							*m_FileStream << std::unitbuf;
 							m_FileStream->seekp(0, std::ios_base::end);
 							m_FileStream->write(reinterpret_cast<const char*>(p_Record), c_RecordSize);
 							m_FileStream->sync();
 							sync();
-#endif
-							std::this_thread::sleep_for(std::chrono::milliseconds(50));
+#endif							
 							++m_RecordCount;
 							m_Status = m_PrevStatus;
 							l_result = true;
@@ -396,11 +446,9 @@ int main()
 	unsigned int l_R1, l_R2, l_R3;
 
 	unsigned int l_TotalTestCount(0);
-	while (l_TotalTestCount < 10000)
+	while (l_TotalTestCount < 100)
 	{
-		++l_TotalTestCount;
-
-		std::cout << "Test: " << l_TotalTestCount << std::endl;
+		std::cout << "\rLoad Test: " << ++l_TotalTestCount;
 
 		CumulativeWriter<Something> l_File("d:\\test.txt");
 		if (l_File.RecordCount() > 0)
@@ -445,6 +493,10 @@ int main()
 					}
 				}
 			}
+			else
+			{
+				std::cout << "Load Error" << std::endl;
+			}
 		}
 
 		l_R1 = std::rand();
@@ -454,6 +506,55 @@ int main()
 		Something S{ l_R1, l_R2, l_R3 };
 		l_File.Write(&S);
 	}
+
+	unsigned int l_WPS(0);
+	l_TotalTestCount = 0;
+	CumulativeWriter<Something> l_WriteFile("d:\\test2.txt");
+	auto l_Time(std::chrono::steady_clock::now());
+	while (l_TotalTestCount < 100)
+	{
+		auto l_Duration(std::chrono::steady_clock::now() - l_Time);
+		auto l_Cast(std::chrono::duration_cast<std::chrono::milliseconds>(l_Duration));
+		if (l_Cast.count() >= 1000)
+		{
+			std::cout << "\rWPS: " << l_WPS << "               " << std::endl;
+			l_Time = std::chrono::steady_clock::now();
+			l_WPS = 0;
+		}
+
+		std::cout << "\rWrite Test: " << ++l_TotalTestCount;
+
+		l_R1 = std::rand();
+		l_R2 = std::rand();
+		l_R3 = std::rand();
+
+		Something S{ l_R1, l_R2, l_R3 };
+		++l_WPS;
+		l_WriteFile.Write(&S);
+	}
+	l_WriteFile.Close();
+
+	Something l_Expected{ l_R1, l_R2, l_R3 };
+	std::cout << "Expected: ";
+	PrintSomething(l_Expected);
+
+	CumulativeWriter<Something> l_ReadBack("d:\\test2.txt");
+	if (l_ReadBack.WasOkayAtLoad())
+	{
+		std::cout << "Loaded:   ";
+
+		auto l_Loaded(l_ReadBack.LoadLastRecord());
+		if (l_Loaded.first == Bluebird::CumulativeWriter<Something>::RecordReadStatus::Okay &&
+			l_Loaded.second != nullptr)
+		{
+			PrintSomething(*l_Loaded.second);
+		}
+		else
+		{
+			std::cout << "Error" << std::endl;
+		}
+	}
+
 
 	std::cout << "Enter an integer to quit..." << std::endl;
 	int l_temp;
