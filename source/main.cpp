@@ -73,7 +73,11 @@ namespace Bluebird
 		private:
 
 			std::string		m_Filename;
+#ifdef _WIN32
+			HANDLE			m_FileStream;
+#else
 			FileStreamPtr		m_FileStream;
+#endif
 			Status			m_Status;
 			Status			m_PrevStatus;
 			std::mutex		m_Lock;
@@ -90,7 +94,11 @@ namespace Bluebird
 			CumulativeWriter(const std::string& p_Filename)
 				:
 				m_Filename(p_Filename),
+#ifdef _WIN32
+				m_FileStream(INVALID_HANDLE_VALUE),
+#else
 				m_FileStream(nullptr),
+#endif
 				m_Status(Status::Unknown),
 				m_PrevStatus(m_Status),
 				m_Lock(),
@@ -107,19 +115,39 @@ namespace Bluebird
 				Close();
 			}
 
+			inline const bool FileStreamValid() const noexcept
+			{
+#ifdef _WIN32
+				return m_FileStream != INVALID_HANDLE_VALUE;
+#else
+				return m_FileStream != nullptr;
+#endif
+			}
+
 		private:
 
 			void OpenFileStream() noexcept
 			{
 				std::lock_guard<std::mutex> l_Lock(m_Lock);
-				if (!m_FileStream)
+				if (!FileStreamValid())
 				{
 					try
 					{
+#ifdef _WIN32
+						m_FileStream = CreateFileA(
+							m_Filename.c_str(),
+							GENERIC_READ | GENERIC_WRITE,
+							FILE_SHARE_READ | FILE_SHARE_WRITE,
+							NULL,
+							OPEN_ALWAYS,
+							FILE_ATTRIBUTE_NORMAL | FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH,
+							NULL);
+#else
 						m_FileStream = std::make_shared<std::fstream>(
 							m_Filename,
 							std::ios_base::out | std::ios_base::in | std::ios_base::app | std::ios_base::ate);
 						*m_FileStream << std::unitbuf;
+#endif
 						CalculateRecordCount();
 						if (m_Status != Status::UnableToCalculateRecords)
 						{
@@ -135,28 +163,41 @@ namespace Bluebird
 
 			void CalculateRecordCount()
 			{
-				if (m_FileStream)
+				if (FileStreamValid())
 				{
 					try
 					{
-						auto l_Pos(m_FileStream->tellg());
-						std::fpos_t l_fpos(l_Pos);
-
-						m_RecordCount = static_cast<unsigned int>(l_fpos) / c_RecordSize;
-
-						auto l_Remainder(l_fpos % c_RecordSize);
-						if ( l_Remainder == 0 )
+#ifdef _WIN32
+						DWORD l_fpos(0);
+						if (GetFileSize(m_FileStream, &l_fpos) != INVALID_FILE_SIZE)
 						{
-							m_LoadState = LoadState::Okay;
-						}
+#else
+							auto l_Pos(m_FileStream->tellg());
+							std::fpos_t l_fpos(l_Pos);
+#endif
+
+							m_RecordCount = static_cast<unsigned int>(l_fpos) / c_RecordSize;
+
+							auto l_Remainder(l_fpos % c_RecordSize);
+							if (l_Remainder == 0)
+							{
+								m_LoadState = LoadState::Okay;
+							}
+							else
+							{
+								std::cout << "There are [" << l_fpos << "bytes] in the file which is [" << m_RecordCount << "] full records and [" << l_Remainder << "bytes] remaining" << std::endl;
+
+								m_LoadState = LoadState::Corrupt;
+							}
+
+							//m_FileStream->seekg(0, std::ios_base::beg);
+#ifdef _WIN32
+						}					
 						else
 						{
-							std::cout << "There are [" << l_fpos << "bytes] in the file which is [" << m_RecordCount << "] full records and [" << l_Remainder << "bytes] remaining" << std::endl;
-
 							m_LoadState = LoadState::Corrupt;
 						}
-
-						m_FileStream->seekg(0, std::ios_base::beg);
+#endif
 					}
 					catch (const std::exception&)
 					{
@@ -175,7 +216,7 @@ namespace Bluebird
 				RecordReadStatus l_resultCode(RecordReadStatus::Unknown);
 				std::shared_ptr<T> l_result(nullptr);
 
-				if (m_FileStream)
+				if (FileStreamValid())
 				{
 					try
 					{
@@ -190,10 +231,24 @@ namespace Bluebird
 							std::streampos l_SeekPos(p_RecordOffset * c_RecordSize);
 							try
 							{
+#ifdef _WIN32
+								SetFilePointer(
+									m_FileStream,
+									l_SeekPos,
+									NULL,
+									FILE_BEGIN);
+								WriteFile(
+									m_FileStream,
+									reinterpret_cast<char*>(l_result.get()),
+									c_RecordSize,
+									NULL,
+									NULL);
+#else
 								m_FileStream->seekg(l_SeekPos);
 								m_FileStream->read(
 									reinterpret_cast<char*>(l_result.get()),
 									c_RecordSize);
+#endif
 
 								m_Status = m_PrevStatus;
 
@@ -262,12 +317,17 @@ namespace Bluebird
 				m_Status = Status::Closing;
 
 				std::lock_guard<std::mutex> l_Lock(m_Lock);
-				if (m_FileStream)
+				if (FileStreamValid())
 				{
 					try
 					{
+#ifdef _WIN32
+						CloseHandle(m_FileStream);
+						m_FileStream = INVALID_HANDLE_VALUE;
+#else
 						m_FileStream->close();
 						m_FileStream = nullptr;
+#endif
 					}
 					catch (const std::exception&)
 					{
@@ -286,17 +346,28 @@ namespace Bluebird
 					std::lock_guard<std::mutex> l_Lock(m_Lock);
 					m_PrevStatus = m_Status;
 
-					if (m_FileStream)
+					if (FileStreamValid())
 					{
 						m_Status = Status::Writing;
 						try
 						{
+#ifdef _WIN32
+							SetFilePointer(
+								m_FileStream,
+								0,
+								NULL,
+								FILE_END);
+							WriteFile(
+								m_FileStream,
+								reinterpret_cast<const char*>(p_Record),
+								c_RecordSize,
+								NULL,
+								NULL);
+#else
 							m_FileStream->seekp(0, std::ios_base::end);
 							m_FileStream->write(reinterpret_cast<const char*>(p_Record), c_RecordSize);
 							m_FileStream->sync();
-#ifndef _WIN32
 							sync();
-#else
 #endif
 							std::this_thread::sleep_for(std::chrono::milliseconds(50));
 							++m_RecordCount;
