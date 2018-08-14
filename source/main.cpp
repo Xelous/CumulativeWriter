@@ -207,10 +207,10 @@ namespace Bluebird
 						{
 							unsigned int l_fpos(static_cast<unsigned int>(l_FileSize.QuadPart));
 #else
-							auto l_Pos(m_FileStream->tellg());
-							std::fpos_t l_fpos(l_Pos);
+							auto l_fpos(m_FileStream->tellg());
+							//std::fpos_t l_fpos(l_Pos);
 #endif
-							m_RecordCount = l_fpos / c_RecordSize;
+							m_RecordCount = static_cast<unsigned int>(l_fpos) / c_RecordSize;
 
 							auto l_Remainder(l_fpos % c_RecordSize);
 							if (l_Remainder == 0)
@@ -219,7 +219,7 @@ namespace Bluebird
 							}
 							else
 							{
-								std::cout << "There are [" << l_fpos << "bytes] in the file which is [" << m_RecordCount << "] full records and [" << l_Remainder << "bytes] remaining" << std::endl;
+								//std::cout << "There are [" << l_fpos << "bytes] in the file which is [" << m_RecordCount << "] full records and [" << l_Remainder << "bytes] remaining" << std::endl;
 								m_LoadState = LoadState::Corrupt;
 							}							
 #ifdef _WIN32
@@ -337,7 +337,7 @@ namespace Bluebird
 
 			const unsigned int& RecordSize() const noexcept
 			{
-				return m_RecordSize;
+				return c_RecordSize;
 			}
 
 			const LoadState& LoadState() const noexcept
@@ -385,10 +385,12 @@ namespace Bluebird
 				m_Status = Status::Closed;
 			}
 
+#ifdef _WIN32
 			static void WINAPI CompletionRoutine(DWORD u32_ErrorCode, DWORD u32_BytesTransfered, OVERLAPPED* pk_Overlapped)
 			{
 				int gothere = 1;
 			}
+#endif
 
 			const bool Write(const T* p_Record) noexcept
 			{
@@ -492,7 +494,7 @@ int main()
 	{
 		std::cout << "\rLoad Test: " << ++l_TotalTestCount;
 
-		CumulativeWriter<Something> l_File("e:\\test.txt");
+		CumulativeWriter<Something> l_File("test.txt");
 		if (l_File.RecordCount() > 0)
 		{
 			if (l_File.WasCorruptAtLoad())
@@ -551,7 +553,7 @@ int main()
 
 	unsigned int l_WPS(0);
 	l_TotalTestCount = 0;
-	CumulativeWriter<Something> l_WriteFile("e:\\test2.txt");
+	CumulativeWriter<Something> l_WriteFile("test2.txt");
 	auto l_Time(std::chrono::steady_clock::now());
 	while (l_TotalTestCount < 10000)
 	{
@@ -580,7 +582,7 @@ int main()
 	//std::cout << "Expected: ";
 	//PrintSomething(l_Expected);
 
-	CumulativeWriter<Something> l_ReadBack("d:\\test2.txt");
+	CumulativeWriter<Something> l_ReadBack("test2.txt");
 	if (l_ReadBack.WasOkayAtLoad())
 	{
 		//std::cout << "Loaded:   ";
