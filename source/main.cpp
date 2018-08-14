@@ -20,7 +20,7 @@ namespace Bluebird
 {
 	struct Something
 	{
-		unsigned int X, Y, Z;		
+		unsigned int X, Y, Z;
 	};
 
 	void PrintSomething(const Something& p_Other)
@@ -71,15 +71,15 @@ namespace Bluebird
 
 		private:
 
-			std::string			m_Filename;
+			std::string		m_Filename;
 			FileStreamPtr		m_FileStream;
-			Status				m_Status;
-			Status				m_PrevStatus;
-			std::mutex			m_Lock;
-			LoadState			m_LoadState;
+			Status			m_Status;
+			Status			m_PrevStatus;
+			std::mutex		m_Lock;
+			LoadState		m_LoadState;
 
 			const unsigned int	c_RecordSize;
-			unsigned int		m_RecordCount;			
+			unsigned int		m_RecordCount;
 
 			CumulativeWriter() = delete;
 			CumulativeWriter(const CumulativeWriter&) = delete;
@@ -94,10 +94,10 @@ namespace Bluebird
 				m_PrevStatus(m_Status),
 				m_Lock(),
 				m_LoadState(LoadState::Unknown),
-				m_RecordCount(0),				
+				m_RecordCount(0),
 				c_RecordSize(sizeof(T))
 			{
-				m_Status = Status::ReadyClosed;				
+				m_Status = Status::ReadyClosed;
 				OpenFileStream();
 			}
 
@@ -139,7 +139,7 @@ namespace Bluebird
 					try
 					{
 						auto l_Pos(m_FileStream->tellg());
-						std::fpos_t l_fpos(l_Pos);						
+						std::fpos_t l_fpos(l_Pos);
 
 						m_RecordCount = l_fpos / c_RecordSize;
 
@@ -162,13 +162,13 @@ namespace Bluebird
 						m_Status = Status::UnableToCalculateRecords;
 					}
 				}
-			}			
+			}
 
 		public:
 
 			using TPtr = std::shared_ptr<T>;
 			using ReadRecordResult = std::pair<RecordReadStatus, TPtr>;
-			
+
 			const ReadRecordResult ReadRecord(const unsigned int& p_RecordOffset) noexcept
 			{
 				RecordReadStatus l_resultCode(RecordReadStatus::Unknown);
@@ -177,8 +177,8 @@ namespace Bluebird
 				if (m_FileStream)
 				{
 					try
-					{						
-						std::lock_guard<std::mutex> l_Lock(m_Lock);						
+					{
+						std::lock_guard<std::mutex> l_Lock(m_Lock);
 						if (p_RecordOffset < m_RecordCount)
 						{
 							m_PrevStatus = m_Status;
@@ -217,7 +217,7 @@ namespace Bluebird
 				{
 					l_resultCode = RecordReadStatus::StreamNotOpen;
 				}
-				
+
 				return std::make_pair(l_resultCode, l_result);
 			}
 
@@ -227,7 +227,7 @@ namespace Bluebird
 			}
 
 			const unsigned int& RecordCount() const noexcept
-			{				
+			{
 				return m_RecordCount;
 			}
 
@@ -263,7 +263,7 @@ namespace Bluebird
 				std::lock_guard<std::mutex> l_Lock(m_Lock);
 				if (m_FileStream)
 				{
-					try				
+					try
 					{
 						m_FileStream->close();
 						m_FileStream = nullptr;
@@ -294,8 +294,8 @@ namespace Bluebird
 							m_FileStream->write(reinterpret_cast<const char*>(p_Record), c_RecordSize);
 							m_FileStream->sync();
 #ifndef _WIN32
-							fsync();
-#else						
+							sync();
+#else
 #endif
 							std::this_thread::sleep_for(std::chrono::milliseconds(50));
 							++m_RecordCount;
@@ -321,7 +321,7 @@ int main()
 	using namespace Bluebird;
 
 	std::srand(std::chrono::high_resolution_clock::now().time_since_epoch().count());
-	unsigned int l_R1, l_R2, l_R3;	
+	unsigned int l_R1, l_R2, l_R3;
 
 	unsigned int l_TotalTestCount(0);
 	while (l_TotalTestCount < 10000)
@@ -337,7 +337,7 @@ int main()
 			{
 				std::cout << "Corrupt At Load" << std::endl;
 				break;
-			}			
+			}
 
 			auto l_Loaded(l_File.LoadLastRecord());
 			if (l_Loaded.first == Bluebird::CumulativeWriter<Something>::RecordReadStatus::Okay &&
@@ -374,14 +374,14 @@ int main()
 				}
 			}
 		}
-	
+
 		l_R1 = std::rand();
 		l_R2 = std::rand();
 		l_R3 = std::rand();
-		
-		Something S{ l_R1, l_R2, l_R3 };		
+
+		Something S{ l_R1, l_R2, l_R3 };
 		l_File.Write(&S);
-	}	
+	}
 
 	std::cout << "Enter an integer to quit..." << std::endl;
 	int l_temp;
