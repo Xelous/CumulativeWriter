@@ -612,6 +612,8 @@ int main()
 		}
 	}
 
+	std::cout << std::endl;
+
 
 	std::cout << "Enter an integer to quit..." << std::endl;
 	int l_temp;
