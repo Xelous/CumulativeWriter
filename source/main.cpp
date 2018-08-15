@@ -79,6 +79,7 @@ namespace Bluebird
 				Closed,
 				ErrorOpeningStream,
 				ErrorWriting,
+				ErrorWritingStreamNotReady,
 				ErrorSeeking,
 				ErrorReading,
 				PossibleCorruption,
@@ -388,7 +389,7 @@ namespace Bluebird
 #ifdef _WIN32
 			static void WINAPI CompletionRoutine(DWORD u32_ErrorCode, DWORD u32_BytesTransfered, OVERLAPPED* pk_Overlapped)
 			{
-				int gothere = 1;
+				// Purposefully empty function
 			}
 #endif
 
@@ -467,12 +468,8 @@ namespace Bluebird
 					}
 					else
 					{
-						// TODO - Unable to write
+						m_Status = Status::ErrorWritingStreamNotReady;
 					}
-				}
-				else
-				{
-					// TODO - Already closing
 				}
 
 				return l_result;
@@ -490,7 +487,7 @@ int main()
 	unsigned int l_R1, l_R2, l_R3;
 
 	unsigned int l_TotalTestCount(0);
-	while (l_TotalTestCount < 100000)
+	while (l_TotalTestCount < 500000)
 	{
 		std::cout << "\rLoad Test: " << ++l_TotalTestCount;
 
@@ -555,7 +552,7 @@ int main()
 	l_TotalTestCount = 0;
 	CumulativeWriter<Something> l_WriteFile("test2.txt");
 	auto l_Time(std::chrono::steady_clock::now());
-	while (l_TotalTestCount < 10000)
+	while (l_TotalTestCount < 500000)
 	{
 		auto l_Duration(std::chrono::steady_clock::now() - l_Time);
 		auto l_Cast(std::chrono::duration_cast<std::chrono::milliseconds>(l_Duration));
